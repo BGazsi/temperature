@@ -34,7 +34,6 @@ const addNewMeasurement = () => new Promise((resolve, reject) => {
       _id: new Date().getTime().toString(),
     };
     dbClient.insert(document, new Date().getTime()).then(() => {
-      console.debug('Successfully wrote data to db');
       resolve();
     }).catch((err) => {
       console.error(`Error happened when writing to db:\n ${err}`);
