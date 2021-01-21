@@ -61,7 +61,7 @@ const exec = () => {
           console.error('Stopping measurement loop because too many failures have happened');
         }
       });
-  });
+  }, process.env.refresh_interval);
 };
 
 exec();
