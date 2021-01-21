@@ -31,6 +31,7 @@ const addNewMeasurement = () => new Promise((resolve, reject) => {
     const document = {
       temp: res.temperature.toFixed(1),
       humidity: res.humidity.toFixed(1),
+      _id: new Date().getTime().toString(),
     };
     dbClient.insert(document, new Date().getTime()).then(() => {
       console.debug('Successfully wrote data to db');
