@@ -45,8 +45,9 @@ const addNewMeasurement = () => new Promise((resolve, reject) => {
   });
 });
 
-const exec = () => {
+const exec = async () => {
   let failsInARow = 0;
+  await addNewMeasurement();
   const interval = setInterval(() => {
     addNewMeasurement()
       .then(() => {
@@ -57,8 +58,9 @@ const exec = () => {
 
         // stop execution if we suspect something is not working
         if (failsInARow > 5) {
-          clearInterval(interval);
           console.error('Stopping measurement loop because too many failures have happened');
+          clearInterval(interval);
+          process.abort();
         }
       });
   }, process.env.refresh_interval);
