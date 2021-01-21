@@ -26,7 +26,7 @@ if (!useRealSensor || useRealSensor === 'false') {
   };
 }
 
-const exec = () => {
+const addNewMeasurement = () => new Promise((resolve, reject) => {
   sensor.read(22, 4).then((res) => {
     const document = {
       temp: res.temperature.toFixed(1),
@@ -34,11 +34,33 @@ const exec = () => {
     };
     dbClient.insert(document, new Date().getTime()).then(() => {
       console.debug('Successfully wrote data to db');
+      resolve();
     }).catch((err) => {
       console.error(`Error happened when writing to db:\n ${err}`);
+      reject(err);
     });
   }).catch((err) => {
     console.error(`Error gathering data from the sensor:\n ${err}`);
+    reject(err);
+  });
+});
+
+const exec = () => {
+  let failsInARow = 0;
+  const interval = setInterval(() => {
+    addNewMeasurement()
+      .then(() => {
+        failsInARow = 0;
+      })
+      .catch(() => {
+        failsInARow += 1;
+
+        // stop execution if we suspect something is not working
+        if (failsInARow > 5) {
+          clearInterval(interval);
+          console.error('Stopping measurement loop because too many failures have happened');
+        }
+      });
   });
 };
 
