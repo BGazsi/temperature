@@ -8,9 +8,8 @@ export interface Sensor {
 }
 
 export interface TemperatureDocument {
+  _id: string;
   temp: string;
   humidity: string;
-  _id: string;
+  timestamp: Date;
 }
-
-// Made with Bob

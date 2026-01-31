@@ -18,7 +18,8 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "mongodb": "^6.21.0",
-    "node-dht-sensor": "^0.4.5"
+    "node-dht-sensor": "^0.4.5",
+    "uuidv7": "^1.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

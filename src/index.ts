@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { MongoClient, Db, Collection } from 'mongodb';
+import { uuidv7 } from 'uuidv7';
 import { mockSensor } from './mockSensor';
 import { Sensor, SensorReading, TemperatureDocument } from './types';
 
@@ -42,14 +43,18 @@ const connectToMongoDB = async (): Promise<void> => {
 const addNewMeasurement = async (): Promise<void> => {
   try {
     const res: SensorReading = await sensor.read(22, 4);
+    const timestamp = new Date();
     const document: TemperatureDocument = {
+      _id: uuidv7(),
       temp: res.temperature.toFixed(1),
       humidity: res.humidity.toFixed(1),
-      _id: new Date().getTime().toString(),
+      timestamp,
     };
 
     await collection.insertOne(document);
-    console.log(`Measurement saved: ${document.temp}°C, ${document.humidity}% humidity`);
+    console.log(
+      `Measurement saved: ${document.temp}°C, ${document.humidity}% humidity at ${timestamp.toISOString()}`
+    );
   } catch (err) {
     if (err instanceof Error) {
       console.error(`Error gathering data from the sensor or writing to db:\n ${err.message}`);
@@ -74,5 +79,3 @@ exec().catch((err) => {
   console.error('Failed to start application:', err);
   process.exit(1);
 });
-
-// Made with Bob
