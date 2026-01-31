@@ -1,0 +1,16 @@
+export interface SensorReading {
+  temperature: number;
+  humidity: number;
+}
+
+export interface Sensor {
+  read: (sensorType: number, pin: number) => Promise<SensorReading>;
+}
+
+export interface TemperatureDocument {
+  temp: string;
+  humidity: string;
+  _id: string;
+}
+
+// Made with Bob
