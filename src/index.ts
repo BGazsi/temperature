@@ -1,238 +1,178 @@
-import dotenv from 'dotenv';
-import { MongoClient, Db, Collection } from 'mongodb';
-import { uuidv7 } from 'uuidv7';
-import { mockSensor } from './mockSensor';
-import { Sensor, SensorReading, TemperatureDocument } from './types';
+import { config } from './config/environment';
+import { logger } from './monitoring/logger';
+import { metrics } from './monitoring/metrics';
+import { HealthChecker } from './monitoring/healthCheck';
+import { DatabaseConnection } from './database/connection';
+import { TemperatureRepository } from './database/repository';
+import { BufferService } from './services/bufferService';
+import { MeasurementService } from './services/measurementService';
+import { createSensor } from './sensor/sensorFactory';
 
-dotenv.config();
+// Initialize components
+const sensor = createSensor();
+const dbConnection = new DatabaseConnection();
+const bufferService = new BufferService();
 
-const useRealSensor = process.env.use_real_sensor;
+let repository: TemperatureRepository | null = null;
+let measurementService: MeasurementService;
+let healthChecker: HealthChecker;
+let measurementInterval: NodeJS.Timeout | null = null;
+let metricsInterval: NodeJS.Timeout | null = null;
+let healthCheckInterval: NodeJS.Timeout | null = null;
 
-// Dynamic import for real sensor (optional dependency)
-let sensor: Sensor;
-if (!useRealSensor || useRealSensor === 'false') {
-  sensor = mockSensor;
-} else {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-unsafe-member-access
-  const realSensor = require('node-dht-sensor').promises as Sensor;
-  sensor = realSensor;
-}
-
-// Validate and parse environment variables
-const mongoUrl = process.env.MONGODB_URL || 'mongodb://localhost:27017';
-const dbName = process.env.MONGODB_DB_NAME || 'temperature_db';
-const collectionName = process.env.MONGODB_COLLECTION || 'temperatures';
-const refreshInterval = parseInt(process.env.refresh_interval || '60000', 10);
-
-if (isNaN(refreshInterval) || refreshInterval < 1000) {
-  console.error('Invalid refresh_interval. Must be a number >= 1000ms. Using default: 60000ms');
-}
-
-const RETRY_DELAY = 5000; // 5 seconds
-const MAX_RETRY_DELAY = 60000; // 1 minute
-const MAX_CONSECUTIVE_ERRORS = 10;
-
-let client: MongoClient;
-let db: Db;
-let collection: Collection<TemperatureDocument>;
-let isConnected = false;
-let consecutiveErrors = 0;
-let retryTimeout: NodeJS.Timeout | null = null;
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-const connectToMongoDB = async (retryCount = 0): Promise<void> => {
+const initializeDatabase = async (): Promise<void> => {
   try {
-    if (client) {
-      try {
-        await client.close();
-      } catch (err) {
-        console.warn('Error closing existing client:', err);
-      }
-    }
+    const db = await dbConnection.connect();
+    repository = new TemperatureRepository(db);
+    await repository.ensureIndexes();
 
-    client = new MongoClient(mongoUrl, {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-    });
+    // Update services with new repository
+    measurementService.updateRepository(repository);
+    healthChecker.updateDb(db);
 
-    await client.connect();
-    console.log('Connected successfully to MongoDB');
-
-    db = client.db(dbName);
-    collection = db.collection<TemperatureDocument>(collectionName);
-    isConnected = true;
-    consecutiveErrors = 0;
-
-    // Monitor connection health
-    client.on('close', () => {
-      console.warn('MongoDB connection closed');
-      isConnected = false;
-      scheduleReconnect();
-    });
-
-    client.on('error', (err) => {
-      console.error('MongoDB connection error:', err);
-      isConnected = false;
-    });
-  } catch (err) {
-    isConnected = false;
-    const delay = Math.min(RETRY_DELAY * Math.pow(2, retryCount), MAX_RETRY_DELAY);
-    console.error(`Failed to connect to MongoDB (attempt ${retryCount + 1}):`, err);
-    console.log(`Retrying in ${delay / 1000} seconds...`);
-
-    await sleep(delay);
-    return connectToMongoDB(retryCount + 1);
+    logger.info('Database initialized successfully');
+  } catch (error) {
+    logger.error({ error }, 'Failed to initialize database');
+    throw error;
   }
 };
 
-const scheduleReconnect = (): void => {
-  if (retryTimeout) {
-    return; // Already scheduled
-  }
+const startMeasurements = (): void => {
+  // Initial measurement
+  measurementService.takeMeasurement().catch((err: unknown) => {
+    logger.error({ error: err }, 'Error in initial measurement');
+  });
 
-  retryTimeout = setTimeout(() => {
-    retryTimeout = null;
-    console.log('Attempting to reconnect to MongoDB...');
-    connectToMongoDB().catch((err) => {
-      console.error('Reconnection failed:', err);
+  // Schedule periodic measurements
+  measurementInterval = setInterval(() => {
+    measurementService.takeMeasurement().catch((err: unknown) => {
+      logger.error({ error: err }, 'Error in periodic measurement');
     });
-  }, RETRY_DELAY);
+  }, config.REFRESH_INTERVAL);
+
+  logger.info({ intervalMs: config.REFRESH_INTERVAL }, 'Measurement collection started');
 };
 
-const addNewMeasurement = async (): Promise<void> => {
-  if (!isConnected) {
-    console.warn('Skipping measurement: MongoDB not connected');
-    consecutiveErrors++;
-    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-      console.error(
-        `Too many consecutive errors (${consecutiveErrors}). Attempting reconnection...`
-      );
-      scheduleReconnect();
-    }
-    return;
-  }
+const startMetricsLogging = (): void => {
+  // Log metrics every 5 minutes
+  metricsInterval = setInterval(() => {
+    metrics.logStats();
+  }, 300000);
+};
 
-  try {
-    const res: SensorReading = await sensor.read(22, 4);
-    const timestamp = new Date();
-    const document: TemperatureDocument = {
-      _id: uuidv7(),
-      temp: res.temperature.toFixed(1),
-      humidity: res.humidity.toFixed(1),
-      timestamp,
-    };
-
-    await collection.insertOne(document);
-    console.log(
-      `Measurement saved: ${document.temp}°C, ${document.humidity}% humidity at ${timestamp.toISOString()}`
-    );
-    consecutiveErrors = 0; // Reset on success
-  } catch (err) {
-    consecutiveErrors++;
-    if (err instanceof Error) {
-      console.error(`Error gathering data from sensor or writing to db: ${err.message}`);
-    } else {
-      console.error(`Unknown error occurred: ${String(err)}`);
-    }
-
-    // Check if it's a MongoDB connection error
-    if (
-      err instanceof Error &&
-      (err.message.includes('topology') || err.message.includes('connection'))
-    ) {
-      console.warn('Detected MongoDB connection issue');
-      isConnected = false;
-      scheduleReconnect();
-    }
-
-    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-      console.error(
-        `Too many consecutive errors (${consecutiveErrors}). Attempting reconnection...`
-      );
-      scheduleReconnect();
-    }
-  }
+const startHealthChecks = (): void => {
+  // Perform health check every 2 minutes
+  healthCheckInterval = setInterval(() => {
+    healthChecker.check().catch((err: unknown) => {
+      logger.error({ error: err }, 'Health check failed');
+    });
+  }, 120000);
 };
 
 const gracefulShutdown = async (signal: string): Promise<void> => {
-  console.log(`\nReceived ${signal}. Starting graceful shutdown...`);
+  logger.info({ signal }, 'Starting graceful shutdown');
 
-  if (retryTimeout) {
-    clearTimeout(retryTimeout);
+  // Clear all intervals
+  if (measurementInterval) {
+    clearInterval(measurementInterval);
+  }
+  if (metricsInterval) {
+    clearInterval(metricsInterval);
+  }
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
   }
 
-  if (client) {
+  // Log final metrics
+  metrics.logStats();
+
+  // Try to flush buffer one last time
+  if (repository && bufferService.getBufferSize() > 0) {
+    logger.info('Attempting to flush buffer before shutdown');
     try {
-      await client.close();
-      console.log('MongoDB connection closed');
-    } catch (err) {
-      console.error('Error closing MongoDB connection:', err);
+      const flushed = await bufferService.flush(repository.getCollection());
+      logger.info({ flushedCount: flushed }, 'Buffer flushed');
+    } catch (error) {
+      logger.error({ error }, 'Failed to flush buffer during shutdown');
     }
   }
 
-  console.log('Shutdown complete');
+  // Close database connection
+  await dbConnection.close();
+
+  logger.info('Shutdown complete');
   process.exit(0);
 };
 
 // Register shutdown handlers
 process.on('SIGTERM', () => {
-  gracefulShutdown('SIGTERM').catch((err) => {
-    console.error('Error during shutdown:', err);
+  gracefulShutdown('SIGTERM').catch((err: unknown) => {
+    logger.error({ error: err }, 'Error during shutdown');
     process.exit(1);
   });
 });
+
 process.on('SIGINT', () => {
-  gracefulShutdown('SIGINT').catch((err) => {
-    console.error('Error during shutdown:', err);
+  gracefulShutdown('SIGINT').catch((err: unknown) => {
+    logger.error({ error: err }, 'Error during shutdown');
     process.exit(1);
   });
 });
 
 // Handle uncaught errors
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err);
-  consecutiveErrors++;
-  if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-    console.error('Too many uncaught exceptions. Exiting...');
+  logger.error({ error: err }, 'Uncaught exception');
+  healthChecker.incrementErrors();
+
+  if (healthChecker.getConsecutiveErrors() >= config.MAX_CONSECUTIVE_ERRORS) {
+    logger.error('Too many uncaught exceptions. Exiting...');
     process.exit(1);
   }
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled rejection at:', promise, 'reason:', reason);
-  consecutiveErrors++;
-  if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-    console.error('Too many unhandled rejections. Exiting...');
+process.on('unhandledRejection', (reason) => {
+  logger.error({ reason }, 'Unhandled rejection');
+  healthChecker.incrementErrors();
+
+  if (healthChecker.getConsecutiveErrors() >= config.MAX_CONSECUTIVE_ERRORS) {
+    logger.error('Too many unhandled rejections. Exiting...');
     process.exit(1);
   }
 });
 
-const exec = async (): Promise<void> => {
-  console.log('Starting temperature monitoring application...');
-  console.log(`Refresh interval: ${refreshInterval}ms`);
-  console.log(`Using ${useRealSensor === 'true' ? 'real' : 'mock'} sensor`);
+const main = async (): Promise<void> => {
+  logger.info('Starting temperature monitoring application');
+  logger.info(
+    {
+      refreshInterval: config.REFRESH_INTERVAL,
+      useRealSensor: config.USE_REAL_SENSOR,
+      mongoUrl: config.MONGODB_URL,
+      dbName: config.MONGODB_DB_NAME,
+      collection: config.MONGODB_COLLECTION,
+    },
+    'Configuration loaded'
+  );
 
-  await connectToMongoDB();
+  // Initialize services
+  measurementService = new MeasurementService(sensor, null, bufferService);
+  healthChecker = new HealthChecker(sensor, null);
 
-  // Initial measurement
-  addNewMeasurement().catch((err) => {
-    console.error('Error in initial measurement:', err);
-  });
+  // Initialize database
+  await initializeDatabase();
 
-  // Schedule periodic measurements
-  setInterval(() => {
-    addNewMeasurement().catch((err) => {
-      console.error('Error in periodic measurement:', err);
-    });
-  }, refreshInterval);
+  // Start all periodic tasks
+  startMeasurements();
+  startMetricsLogging();
+  startHealthChecks();
 
-  console.log('Application started successfully');
+  // Perform initial health check
+  await healthChecker.check();
+
+  logger.info('Application started successfully');
 };
 
-exec().catch((err) => {
-  console.error('Failed to start application:', err);
+// Start the application
+main().catch((err: unknown) => {
+  logger.error({ error: err }, 'Failed to start application');
   process.exit(1);
 });
-
-// Made with Bob
