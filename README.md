@@ -73,6 +73,89 @@ MAX_CONSECUTIVE_ERRORS=10
 ## Project Structure
 
 ```
+## Raspberry Pi Setup - Autostart on Boot
+
+To ensure the application automatically starts after a power outage or system reboot, use the provided setup script:
+
+### Quick Setup
+
+```bash
+# Navigate to the application directory
+cd ~/www/temperature
+
+# Run the setup script
+./setup-autostart.sh
+```
+
+The script will:
+1. Install PM2 globally (if not already installed)
+2. Build the application
+3. Start the application with PM2
+4. Save the PM2 process list
+5. Generate a systemd startup script
+
+### Important: Complete the Setup
+
+After running the script, you'll see a command like:
+
+```bash
+sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u pi --hp /home/pi
+```
+
+**Copy and run this command with sudo** to complete the setup. This registers PM2 to start on boot.
+
+### Manual Setup (Alternative)
+
+If you prefer to set up manually:
+
+```bash
+# Install PM2 globally
+npm install -g pm2
+
+# Build the application
+npm run build
+
+# Start with PM2
+pm2 start dist/index.js --name temperature --time
+
+# Save PM2 process list
+pm2 save
+
+# Generate startup script (run the output command with sudo)
+pm2 startup systemd
+
+# Enable PM2 resurrection (restart saved processes on boot)
+pm2 save
+```
+
+### Verify Autostart
+
+To verify the setup works:
+
+```bash
+# Check PM2 status
+pm2 status
+
+# Reboot the Raspberry Pi
+sudo reboot
+
+# After reboot, check if the app is running
+pm2 status
+pm2 logs temperature
+```
+
+### PM2 Management Commands
+
+```bash
+pm2 status              # Check application status
+pm2 logs temperature    # View real-time logs
+pm2 restart temperature # Restart the application
+pm2 stop temperature    # Stop the application
+pm2 start temperature   # Start the application
+pm2 monit              # Monitor CPU/memory usage
+pm2 delete temperature  # Remove from PM2
+```
+
 ├── src/
 │   ├── config/
 │   │   └── environment.ts       # Environment variable validation with Zod
