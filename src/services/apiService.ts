@@ -148,10 +148,27 @@ export class ApiService {
 
   async healthCheck(): Promise<boolean> {
     try {
-      const response = await this.client.get('/api/health');
+      // Use the readiness endpoint which only checks critical services (database)
+      // This prevents false negatives when API is degraded but still functional
+      const response = await this.client.get('/api/health/ready');
       return response.status === 200;
     } catch (error) {
-      logger.error({ error }, 'API health check failed');
+      const axiosError = error as AxiosError;
+
+      // If we get a 503 from /ready, the database is not connected
+      // Log appropriately based on the error type
+      if (axiosError.response?.status === 503) {
+        logger.warn(
+          {
+            status: axiosError.response.status,
+            reason: axiosError.response.data,
+          },
+          'API not ready - database not connected'
+        );
+      } else {
+        logger.error({ error }, 'API health check failed');
+      }
+
       return false;
     }
   }
