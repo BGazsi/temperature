@@ -8,6 +8,7 @@ export class Metrics {
     failed: 0,
     sensorErrors: 0,
     dbErrors: 0,
+    apiErrors: 0,
   };
 
   private latencies: number[] = [];
@@ -25,14 +26,16 @@ export class Metrics {
     }
   }
 
-  recordFailure(type: 'sensor' | 'database'): void {
+  recordFailure(type: 'sensor' | 'database' | 'api'): void {
     this.measurements.total++;
     this.measurements.failed++;
 
     if (type === 'sensor') {
       this.measurements.sensorErrors++;
-    } else {
+    } else if (type === 'database') {
       this.measurements.dbErrors++;
+    } else {
+      this.measurements.apiErrors++;
     }
   }
 
@@ -71,6 +74,7 @@ export class Metrics {
       failed: 0,
       sensorErrors: 0,
       dbErrors: 0,
+      apiErrors: 0,
     };
     this.latencies = [];
   }

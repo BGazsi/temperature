@@ -9,6 +9,15 @@ const envSchema = z.object({
     .optional()
     .default('false')
     .transform((val) => val === 'true'),
+  // API Configuration (new approach)
+  API_URL: z.string().default('http://localhost:443'),
+  API_KEY: z.string().optional(),
+  API_TIMEOUT: z
+    .string()
+    .optional()
+    .default('10000')
+    .transform((val) => parseInt(val, 10)),
+  // Database Configuration (kept for backward compatibility, but not used in API mode)
   MONGODB_URL: z.string().default('mongodb://localhost:27017'),
   MONGODB_DB_NAME: z.string().default('temperature_db'),
   MONGODB_COLLECTION: z.string().default('temperatures'),
@@ -50,6 +59,9 @@ let config: Config;
 try {
   config = envSchema.parse({
     USE_REAL_SENSOR: process.env.use_real_sensor,
+    API_URL: process.env.API_URL,
+    API_KEY: process.env.API_KEY,
+    API_TIMEOUT: process.env.API_TIMEOUT,
     MONGODB_URL: process.env.MONGODB_URL,
     MONGODB_DB_NAME: process.env.MONGODB_DB_NAME,
     MONGODB_COLLECTION: process.env.MONGODB_COLLECTION,

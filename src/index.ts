@@ -2,38 +2,36 @@ import { config } from './config/environment';
 import { logger } from './monitoring/logger';
 import { metrics } from './monitoring/metrics';
 import { HealthChecker } from './monitoring/healthCheck';
-import { DatabaseConnection } from './database/connection';
-import { TemperatureRepository } from './database/repository';
+import { ApiService } from './services/apiService';
 import { BufferService } from './services/bufferService';
 import { MeasurementService } from './services/measurementService';
 import { createSensor } from './sensor/sensorFactory';
 
 // Initialize components
 const sensor = createSensor();
-const dbConnection = new DatabaseConnection();
+const apiService = new ApiService();
 const bufferService = new BufferService();
 
-let repository: TemperatureRepository | null = null;
 let measurementService: MeasurementService;
 let healthChecker: HealthChecker;
 let measurementInterval: NodeJS.Timeout | null = null;
 let metricsInterval: NodeJS.Timeout | null = null;
 let healthCheckInterval: NodeJS.Timeout | null = null;
 
-const initializeDatabase = async (): Promise<void> => {
+const initializeApi = async (): Promise<void> => {
   try {
-    const db = await dbConnection.connect();
-    repository = new TemperatureRepository(db);
-    await repository.ensureIndexes();
-
-    // Update services with new repository
-    measurementService.updateRepository(repository);
-    healthChecker.updateDb(db);
-
-    logger.info('Database initialized successfully');
+    const isHealthy = await apiService.healthCheck();
+    
+    if (isHealthy) {
+      // Update services with API service
+      measurementService.updateApiService(apiService);
+      logger.info('API connection verified successfully');
+    } else {
+      logger.warn('API health check failed, will buffer measurements until API is available');
+    }
   } catch (error) {
-    logger.error({ error }, 'Failed to initialize database');
-    throw error;
+    logger.error({ error }, 'Failed to connect to API');
+    logger.warn('Will buffer measurements until API is available');
   }
 };
 
@@ -87,18 +85,15 @@ const gracefulShutdown = async (signal: string): Promise<void> => {
   metrics.logStats();
 
   // Try to flush buffer one last time
-  if (repository && bufferService.getBufferSize() > 0) {
+  if (bufferService.getBufferSize() > 0) {
     logger.info('Attempting to flush buffer before shutdown');
     try {
-      const flushed = await bufferService.flush(repository.getCollection());
+      const flushed = await bufferService.flush(apiService);
       logger.info({ flushedCount: flushed }, 'Buffer flushed');
     } catch (error) {
       logger.error({ error }, 'Failed to flush buffer during shutdown');
     }
   }
-
-  // Close database connection
-  await dbConnection.close();
 
   logger.info('Shutdown complete');
   process.exit(0);
@@ -146,9 +141,8 @@ const main = async (): Promise<void> => {
     {
       refreshInterval: config.REFRESH_INTERVAL,
       useRealSensor: config.USE_REAL_SENSOR,
-      mongoUrl: config.MONGODB_URL,
-      dbName: config.MONGODB_DB_NAME,
-      collection: config.MONGODB_COLLECTION,
+      apiUrl: config.API_URL,
+      apiTimeout: config.API_TIMEOUT,
     },
     'Configuration loaded'
   );
@@ -157,8 +151,8 @@ const main = async (): Promise<void> => {
   measurementService = new MeasurementService(sensor, null, bufferService);
   healthChecker = new HealthChecker(sensor, null);
 
-  // Initialize database
-  await initializeDatabase();
+  // Initialize API connection
+  await initializeApi();
 
   // Start all periodic tasks
   startMeasurements();

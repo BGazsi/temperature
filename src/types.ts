@@ -38,6 +38,7 @@ export interface MetricsData {
   failed: number;
   sensorErrors: number;
   dbErrors: number;
+  apiErrors: number;
   successRate: number;
   avgLatency: number;
   bufferedCount: number;

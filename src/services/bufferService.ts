@@ -1,10 +1,15 @@
-import { Collection } from 'mongodb';
-import { BufferedMeasurement, TemperatureDocument } from '../types';
+import { ApiService, TemperatureReading } from './apiService';
 import { logger } from '../monitoring/logger';
 import { config } from '../config/environment';
 
+interface BufferedReading {
+  reading: TemperatureReading;
+  retryCount: number;
+  timestamp: Date;
+}
+
 export class BufferService {
-  private buffer: BufferedMeasurement[] = [];
+  private buffer: BufferedReading[] = [];
   private readonly maxBufferSize: number;
   private readonly maxRetries = 3;
 
@@ -12,17 +17,20 @@ export class BufferService {
     this.maxBufferSize = maxBufferSize || config.MAX_BUFFER_SIZE;
   }
 
-  add(document: TemperatureDocument): void {
+  add(reading: TemperatureReading): void {
     if (this.buffer.length >= this.maxBufferSize) {
       const removed = this.buffer.shift();
       logger.warn(
-        { removedId: removed?.document._id, bufferSize: this.buffer.length },
+        {
+          removedReading: removed?.reading,
+          bufferSize: this.buffer.length
+        },
         'Buffer full, removing oldest measurement'
       );
     }
 
     this.buffer.push({
-      document,
+      reading,
       retryCount: 0,
       timestamp: new Date(),
     });
@@ -30,7 +38,7 @@ export class BufferService {
     logger.debug({ bufferSize: this.buffer.length }, 'Measurement added to buffer');
   }
 
-  async flush(collection: Collection<TemperatureDocument>): Promise<number> {
+  async flush(apiService: ApiService): Promise<number> {
     if (this.buffer.length === 0) {
       return 0;
     }
@@ -42,13 +50,23 @@ export class BufferService {
 
     for (const item of itemsToProcess) {
       try {
-        await collection.insertOne(item.document);
-        // Remove from buffer on success
-        const index = this.buffer.findIndex((b) => b.document._id === item.document._id);
-        if (index !== -1) {
-          this.buffer.splice(index, 1);
+        const response = await apiService.postTemperature(item.reading);
+        
+        if (response.success) {
+          // Remove from buffer on success
+          const index = this.buffer.findIndex(
+            (b) =>
+              b.reading.temp === item.reading.temp &&
+              b.reading.humidity === item.reading.humidity &&
+              b.timestamp.getTime() === item.timestamp.getTime()
+          );
+          if (index !== -1) {
+            this.buffer.splice(index, 1);
+          }
+          flushedCount++;
+        } else {
+          throw new Error(response.error || 'API request failed');
         }
-        flushedCount++;
       } catch (error) {
         item.retryCount++;
 
@@ -56,13 +74,18 @@ export class BufferService {
           logger.error(
             {
               error,
-              documentId: item.document._id,
+              reading: item.reading,
               retryCount: item.retryCount,
             },
             'Max retries reached, removing from buffer'
           );
           // Remove from buffer after max retries
-          const index = this.buffer.findIndex((b) => b.document._id === item.document._id);
+          const index = this.buffer.findIndex(
+            (b) =>
+              b.reading.temp === item.reading.temp &&
+              b.reading.humidity === item.reading.humidity &&
+              b.timestamp.getTime() === item.timestamp.getTime()
+          );
           if (index !== -1) {
             this.buffer.splice(index, 1);
           }
@@ -70,13 +93,13 @@ export class BufferService {
           logger.warn(
             {
               error,
-              documentId: item.document._id,
+              reading: item.reading,
               retryCount: item.retryCount,
             },
             'Failed to flush buffered measurement, will retry'
           );
         }
-        // Stop flushing on first error to avoid overwhelming the database
+        // Stop flushing on first error to avoid overwhelming the API
         break;
       }
     }
