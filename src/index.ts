@@ -21,7 +21,7 @@ let healthCheckInterval: NodeJS.Timeout | null = null;
 const initializeApi = async (): Promise<void> => {
   try {
     const isHealthy = await apiService.healthCheck();
-    
+
     if (isHealthy) {
       // Update services with API service
       measurementService.updateApiService(apiService);
